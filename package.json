@@ -1,0 +1,29 @@
+{
+  "name": "whatsapp-news-bot",
+  "version": "1.0.0",
+  "description": "API",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jedrek04/whatsapp-news-bot.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/jedrek04/whatsapp-news-bot/issues"
+  },
+  "homepage": "https://github.com/jedrek04/whatsapp-news-bot#readme",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.57.2",
+    "axios": "^1.11.0",
+    "body-parser": "^2.2.0",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "openai": "^5.19.1"
+  }
+}

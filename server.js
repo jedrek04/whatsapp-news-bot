@@ -20,6 +20,25 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
+// ✅ Helper to clean up arrays from Supabase
+function normalizeArray(value) {
+  if (!value) return [];
+  
+  let arr;
+  if (Array.isArray(value)) arr = value;
+  else {
+    try {
+      arr = JSON.parse(value);
+      if (!Array.isArray(arr)) arr = [value];
+    } catch {
+      arr = [value];
+    }
+  }
+
+  // Remove invalid entries like "[]", empty strings, or whitespace-only strings
+  return arr.filter(item => item && item !== "[]").map(item => item.trim());
+}
+
 // ✅ Webhook Verification
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -34,7 +53,7 @@ app.get("/webhook", (req, res) => {
   }
 });
 
-// ✅ Receive Messages, Store Users, and Summarize with GPT
+// ✅ Receive Messages, Store Users, Parse Commands, and Summarize with GPT
 app.post("/webhook", async (req, res) => {
   const data = req.body;
 
@@ -67,41 +86,113 @@ app.post("/webhook", async (req, res) => {
         else console.log("✅ New user added:", newUser);
       }
 
-      // ✅ GPT summarization
-      let summary = text; // fallback
-      try {
-        const gptResponse = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          messages: [
-            { role: "system", content: "You are a helpful news summarizer for WhatsApp." },
-            { role: "user", content: `Summarize this message in 2-3 sentences: ${text}` }
-          ]
-        });
-        summary = gptResponse.choices[0].message.content;
-        console.log("📄 Summary:", summary);
-      } catch (err) {
-        console.error("❌ GPT error:", err.message);
+      // ✅ COMMAND PARSING
+      function parseCommand(text) {
+        if (!text.startsWith("!")) return null;
+        const [cmdPart, valuePart] = text.split(":").map(s => s.trim());
+        const [command, action] = cmdPart.substring(1).split(" ").map(s => s.trim());
+        const values = valuePart ? valuePart.split(",").map(v => v.trim()).filter(v => v) : [];
+        return { command, action: action || "list", values };
       }
 
-      // ✅ Send summary back to user via WhatsApp
-      try {
-        await axios.post(
-          `https://graph.facebook.com/v20.0/${PHONE_ID}/messages`,
-          {
-            messaging_product: "whatsapp",
-            to: from,
-            type: "text",
-            text: { body: summary },
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${TOKEN}`,
-              "Content-Type": "application/json",
-            },
+      const cmd = parseCommand(text);
+      if (cmd) {
+        const { command, action, values } = cmd;
+
+        let column;
+        if (command === "updatetime") column = "update_times";
+        else if (command === "sources") column = "sources";
+        else if (command === "topics") column = "topics";
+        else column = null;
+
+        if (column) {
+          // Fetch current values from Supabase
+          const { data: existingData } = await supabase
+            .from("users")
+            .select(column)
+            .eq("phone_number", from)
+            .single();
+
+          let updatedArray = normalizeArray(existingData?.[column]);
+
+          if (action === "add") updatedArray = [...new Set([...updatedArray, ...values])];
+          else if (action === "remove") updatedArray = updatedArray.filter(v => !values.includes(v));
+          else if (action === "reset") updatedArray = [];
+          else if (action === "list") {
+            await axios.post(
+              `https://graph.facebook.com/v20.0/${PHONE_ID}/messages`,
+              {
+                messaging_product: "whatsapp",
+                to: from,
+                type: "text",
+                text: { body: `📋 Your current ${command}: ${updatedArray.join(", ") || "(none)"}` },
+              },
+              { headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" } }
+            );
+            return res.sendStatus(200);
           }
-        );
-      } catch (err) {
-        console.error("❌ Error sending message:", err.response?.data || err.message);
+
+          // Save updated array
+          const { error } = await supabase
+            .from("users")
+            .update({ [column]: updatedArray })
+            .eq("phone_number", from);
+
+          if (error) console.error(`❌ Error updating ${column}:`, error);
+
+          // Reply to user
+          await axios.post(
+            `https://graph.facebook.com/v20.0/${PHONE_ID}/messages`,
+            {
+              messaging_product: "whatsapp",
+              to: from,
+              type: "text",
+              text: { body: `✅ Updated ${command}: ${updatedArray.join(", ") || "(none)"}` },
+            },
+            { headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" } }
+          );
+
+          return res.sendStatus(200);
+        }
+      }
+
+      // ✅ GPT summarization (for messages that are NOT commands)
+      if (!text.startsWith("!")) {
+        let summary = text; // fallback
+        try {
+          const gptResponse = await openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            messages: [
+              { role: "system", content: "You are a helpful news summarizer for WhatsApp." },
+              { role: "user", content: `Summarize this message in 2-3 sentences: ${text}` }
+            ]
+          });
+          summary = gptResponse.choices[0].message.content;
+          console.log("📄 Summary:", summary);
+        } catch (err) {
+          console.error("❌ GPT error:", err.message);
+        }
+
+        // ✅ Send summary back to user via WhatsApp
+        try {
+          await axios.post(
+            `https://graph.facebook.com/v20.0/${PHONE_ID}/messages`,
+            {
+              messaging_product: "whatsapp",
+              to: from,
+              type: "text",
+              text: { body: summary },
+            },
+            {
+              headers: {
+                Authorization: `Bearer ${TOKEN}`,
+                "Content-Type": "application/json",
+              },
+            }
+          );
+        } catch (err) {
+          console.error("❌ Error sending message:", err.response?.data || err.message);
+        }
       }
     }
   }
